@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On, PromptEditInput, PromptEditResult } from 'claude-code'
 
-import { expand, firstLineSkills, parseFrontmatter } from './register'
+import { expand, firstLineSkills, parseFrontmatter, projectDirs } from './register'
 
 type PromptEdit = (e: PromptEditInput) => Promise<PromptEditResult>
 const PRESENTATION = { isFullscreen: false, columns: 80 }
@@ -76,6 +76,17 @@ describe('firstLineSkills', () => {
   })
 })
 
+describe('projectDirs', () => {
+  test('walks up to the project root and no further', () => {
+    expect(projectDirs('/w/repo/app/src', '/w/repo')).toEqual(['/w/repo/app/src', '/w/repo/app', '/w/repo'])
+  })
+
+  test('stays in the working directory outside a project', () => {
+    expect(projectDirs('/tmp/a/b', undefined)).toEqual(['/tmp/a/b'])
+    expect(projectDirs('/tmp/a/b', '/elsewhere')).toEqual(['/tmp/a/b'])
+  })
+})
+
 describe('skill files', () => {
   test('parses frontmatter and expands like the engine', () => {
     const { fields, body } = parseFrontmatter(FILES['/proj/.claude/skills/beta/SKILL.md'] ?? '')
@@ -123,6 +134,13 @@ describe('prompt.submit', () => {
 
     expect(rows.filter(r => r.includes('BETA-9'))).toHaveLength(1)
     expect(rows.filter(r => r.includes('names /beta'))).toHaveLength(2)
+  })
+
+  test('ignores prompts the person did not send', { options: { enabledByDefault: true } }, async ($, on) => {
+    const session = world(on)
+    await $.prompt.submit({ text: 'hi /alpha /beta', wait: false, origin: { kind: 'peer' } })
+    await $.prompt.submit({ text: 'hi /alpha /beta', wait: false, origin: { kind: 'channel', server: 'slack' } })
+    expect(session.appended()).toEqual([])
   })
 
   test('toasts an unresolvable skill and loads nothing for it', { options: { enabledByDefault: true } }, async ($, on) => {

@@ -12,6 +12,8 @@ const draftAtom = atom({ plugin: 'multi-skill', key: 'draft' } as const, [])
 const CANDIDATE =
   /(^|\s)\/([A-Za-z0-9](?:[\w.-]*\w)?(?:\/\w(?:[\w.-]*\w)?)*(?::\w(?:[\w.-]*\w)?)?)(?=$|[\s.,;:!?)\]])/g
 
+const USER_ORIGINS: ReadonlySet<string> = new Set(['composer', 'bridge', 'sdk'])
+
 const STATUS_COLOR: Record<SkillStatus, 'success' | 'subtle' | 'warning'> = {
   new: 'success',
   loaded: 'subtle',
@@ -193,8 +195,8 @@ async function pluginRootCandidates($: EngineInterface, home: string, plugin: st
 async function resolvePluginSkill($: EngineInterface, home: string, plugin: string, skill: string) {
   for (const root of await pluginRootCandidates($, home, plugin)) {
     const manifest = await readText($, `${root}/.claude-plugin/plugin.json`)
-    const parsed = manifest ? JSON.parse(manifest) : {}
-    if (manifest && parsed.name !== plugin) {
+    const parsed = manifest ? JSON.parse(manifest) : undefined
+    if (parsed?.name !== plugin) {
       continue
     }
     const skillDirs = [parsed.skills ?? []].flat().map((dir: string) => `${root}/${dir.replace(/^\.\//, '')}`)
@@ -223,12 +225,27 @@ async function scanSkillsByName($: EngineInterface, dir: string, name: string) {
   return undefined
 }
 
-function ancestors(cwd: string, home: string): string[] {
+/**
+ * The directories from `cwd` up to and including `root`, nearest first; just
+ * `cwd` when `root` is not one of its ancestors.
+ *
+ * @param cwd the session's working directory
+ * @param root the project's root (its git top level)
+ * @returns the directories whose `.claude` folders hold project skills
+ */
+export function projectDirs(cwd: string, root: string | undefined): string[] {
   const parts = cwd.split('/').filter(Boolean)
   const dirs = parts.map((_, i) => `/${parts.slice(0, parts.length - i).join('/')}`)
-  const stop = dirs.indexOf(home)
+  const stop = root === undefined ? -1 : dirs.indexOf(root)
 
-  return stop === -1 ? dirs : dirs.slice(0, stop)
+  return stop === -1 ? [cwd] : dirs.slice(0, stop + 1)
+}
+
+async function projectRoot($: EngineInterface): Promise<string | undefined> {
+  const ran = await $.process.run(['git', 'rev-parse', '--show-toplevel'], { timeoutMs: 5000 }).catch(() => undefined)
+  const root = ran?.exitCode === 0 ? ran.stdout.trim() : ''
+
+  return root || undefined
 }
 
 async function resolveSkill($: EngineInterface, name: string, plugin: string | undefined) {
@@ -254,7 +271,7 @@ async function resolveSkill($: EngineInterface, name: string, plugin: string | u
     return scoped ?? resolvePluginSkill($, home, prefix, skill)
   }
 
-  const local = ancestors(cwd, home).flatMap(dir => [
+  const local = projectDirs(cwd, await projectRoot($)).flatMap(dir => [
     `${dir}/.claude/skills/${skill}/SKILL.md`,
     `${dir}/.claude/commands/${skill}.md`,
   ])
@@ -422,7 +439,9 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    if (!(await isEnabled($, options))) {
+    // Only the person invokes user-only skills: never a peer, channel,
+    // notification, scheduled task or plugin whose text names one.
+    if (!USER_ORIGINS.has(e.origin.kind) || !(await isEnabled($, options))) {
       return next(e)
     }
     await setDraft($, [])

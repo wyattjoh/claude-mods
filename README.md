@@ -38,9 +38,13 @@ Settings (in `/config`, or `pluginConfigs` in settings):
 
 ### Where skills are found
 
-- Plain names: `.claude/skills/<n>/SKILL.md` and `.claude/commands/<n>.md` in the working directory and each parent up to `$HOME`, then `~/.claude/skills`, `~/.claude/commands`, then any `~/.claude/skills/*/SKILL.md` whose frontmatter `name` matches.
+- Plain names: `.claude/skills/<n>/SKILL.md` and `.claude/commands/<n>.md` in the working directory and each parent up to the git root (the working directory alone outside a repo), then `~/.claude/skills`, `~/.claude/commands`, then any `~/.claude/skills/*/SKILL.md` whose frontmatter `name` matches.
 - Directory-scoped `a/b:n`: `<cwd>/a/b/.claude/skills/<n>`, and `commands/a/b/n.md`-style command folders.
 - Plugin `p:n`: the plugin's root from `installed_plugins.json`, `CLAUDE_CODE_PLUGIN_DIRS`, the session's `--plugin-dir` flags, or the session's dev-mods folder; then `skills/<n>/SKILL.md`, the manifest's `skills` dirs, or `commands/<n>.md`.
+
+A plugin root only counts when its `.claude-plugin/plugin.json` names that plugin.
+
+Only prompts you send count (typed, Remote Control, or `claude -p`/SDK). Messages from peer sessions, MCP channels, task notifications, and scheduled tasks never load skills.
 
 ### Limits
 
