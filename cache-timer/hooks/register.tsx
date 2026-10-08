@@ -1,25 +1,27 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
 import type { CacheStamp, Prefs, Surface, Ttl, TtlPref } from '../types'
 
+const NAME = 'cache-timer'
 const PANE = 'cache-timer'
-const SETTINGS = 'cache-timer-settings'
-const STORE_KEY = 'prefs'
 const WARN_MS = 60_000
 const TTL_MS: Record<Ttl, number> = { '5m': 5 * 60_000, '1h': 60 * 60_000 }
 
 export const SURFACES: readonly Surface[] = ['status', 'band', 'hint', 'mode', 'spinner', 'duration', 'pane', 'toast']
 
-const SURFACE_LABEL: Record<Surface, string> = {
-  status: 'Status line',
-  band: 'Band above prompt',
-  hint: 'Hint line tail',
-  mode: 'Footer mode label',
-  spinner: 'Spinner',
-  duration: 'Turn duration line',
-  pane: 'Pane',
-  toast: 'Expiry toasts',
+/**
+ * The `userConfig` field (a `/config` row) that turns each surface on.
+ */
+export const OPTION_KEY: Record<Surface, string> = {
+  status: 'showStatus',
+  band: 'showBand',
+  hint: 'showHint',
+  mode: 'showMode',
+  spinner: 'showSpinner',
+  duration: 'showDuration',
+  pane: 'showPane',
+  toast: 'showToast',
 }
 
 const TTL_PREFS: readonly TtlPref[] = ['auto', '5m', '1h']
@@ -226,18 +228,20 @@ function isTruthy(value: string | undefined): boolean {
 /**
  * What a `/cache-timer` invocation asks for.
  */
-export type CommandOutcome = { prefs: Prefs; text: string } | { open: true } | { text: string }
+export type CommandOutcome = { prefs: Prefs; text: string } | { text: string }
 
 const USAGE =
-  'Usage: /cache-timer [all | none | only <s,...> | on <s> | off <s> | toggle <s> | ttl auto|5m|1h | status]\n' +
+  'Usage: /cache-timer [all | none | only <s,...> | on <s> | off <s> | toggle <s> | ttl auto|5m|1h]\n' +
   `Surfaces: ${SURFACES.join(', ')}`
+
+const CONFIG_HINT = 'Change these in /config (the "Cache timer" rows), or with the arguments below.'
 
 /**
  * Parses `/cache-timer`'s arguments against the current preferences.
  *
  * @param args what followed the command
  * @param prefs the preferences now
- * @returns new preferences with a summary, a request to open the pane, or text
+ * @returns new preferences with a summary, or text
  */
 export function parseCommand(args: string, prefs: Prefs): CommandOutcome {
   const [verb = '', ...rest] = args.trim().split(/\s+/).filter(Boolean)
@@ -252,9 +256,8 @@ export function parseCommand(args: string, prefs: Prefs): CommandOutcome {
 
   switch (verb) {
     case '':
-      return { open: true }
     case 'status':
-      return { text: describePrefs(prefs) }
+      return { text: `${describePrefs(prefs)}\n${CONFIG_HINT}\n${USAGE}` }
     case 'all':
       return set([...SURFACES])
     case 'none':
@@ -305,38 +308,52 @@ export function describePrefs(prefs: Prefs): string {
 }
 
 /**
- * Normalises a stored preferences value, dropping what is no longer known.
+ * Reads the preferences from the plugin's `/config` options.
  *
- * @param value what `$.store` held
+ * @param options the `userConfig` values, defaults filled in
  * @returns the preferences
  */
-export function toPrefs(value: unknown): Prefs {
-  if (typeof value !== 'object' || value === null) {
-    return DEFAULT_PREFS
-  }
-  const raw = value as { surfaces?: unknown; ttl?: unknown }
-  const surfaces = Array.isArray(raw.surfaces)
-    ? SURFACES.filter(s => (raw.surfaces as unknown[]).includes(s))
-    : DEFAULT_PREFS.surfaces
-  const ttl = (TTL_PREFS as readonly unknown[]).includes(raw.ttl) ? (raw.ttl as TtlPref) : DEFAULT_PREFS.ttl
+export function prefsFromOptions(options: PluginOptions): Prefs {
+  const surfaces = SURFACES.filter(s => options[OPTION_KEY[s]] === true)
+  const ttl = (TTL_PREFS as readonly unknown[]).includes(options.ttl) ? (options.ttl as TtlPref) : DEFAULT_PREFS.ttl
 
   return { surfaces, ttl }
 }
 
-async function savePrefs($: EngineInterface, fn: (prefs: Prefs) => Prefs): Promise<Prefs> {
-  const hadPane = (await read($, prefsAtom)).surfaces.includes('pane')
-  const next = await update($, prefsAtom, fn)
-  await $.store.set(STORE_KEY, next)
-  await refresh($)
-  const hasPane = next.surfaces.includes('pane')
-  if (hasPane && !hadPane) {
-    await openPane($)
-  }
-  if (hadPane && !hasPane) {
-    await $.ui.close({ id: PANE })
+/**
+ * The option writes that turn `from` into `to`: one per changed `/config`
+ * row, by its `userConfig` field.
+ *
+ * @param from the preferences now
+ * @param to the preferences wanted
+ * @returns field and value pairs
+ */
+export function optionChanges(from: Prefs, to: Prefs): [string, boolean | string][] {
+  const surfaces = SURFACES.flatMap((s): [string, boolean][] => {
+    const isOn = to.surfaces.includes(s)
+
+    return from.surfaces.includes(s) === isOn ? [] : [[OPTION_KEY[s], isOn]]
+  })
+
+  return from.ttl === to.ttl ? surfaces : [...surfaces, ['ttl', to.ttl]]
+}
+
+/**
+ * Writes changed preferences to this plugin's `/config` rows (keyed
+ * `<plugin>.<field>`), as if the person changed them there; the engine
+ * reloads the module with them.
+ *
+ * @returns why a write was refused, when one was
+ */
+async function writePrefs($: EngineInterface, from: Prefs, to: Prefs): Promise<string | undefined> {
+  for (const [field, value] of optionChanges(from, to)) {
+    const written = await $.config.set({ key: `${NAME}.${field}`, value })
+    if ('deny' in written && typeof written.deny === 'string') {
+      return written.deny
+    }
   }
 
-  return next
+  return undefined
 }
 
 let hinted: Ttl | null = null
@@ -431,16 +448,20 @@ async function transcriptTail($: EngineInterface, path: string): Promise<string>
   return ran?.exitCode === 0 ? ran.stdout : ''
 }
 
-async function openPane($: EngineInterface): Promise<void> {
-  await $.ui.open({ id: PANE, title: 'Cache timer' })
-}
-
 /**
- * Opens the settings as a dialog: it takes the keys, each option has a
- * hotkey, and Escape closes it, so `/cache-timer` always gets back in.
+ * Opens the countdown pane while the `pane` surface is on and closes it
+ * otherwise; each load (a `/config` change reloads) settles it again.
  */
-async function openSettings($: EngineInterface): Promise<void> {
-  await $.ui.open({ id: SETTINGS, title: 'Cache timer settings', focus: true, closeOnEscape: true, rows: 18 })
+async function syncPane($: EngineInterface, isOn: boolean): Promise<void> {
+  if (isOn) {
+    await $.ui.open({ id: PANE, title: 'Cache timer' })
+
+    return
+  }
+  const panes = await $.ui.panes()
+  if (panes.some(p => p.id === PANE)) {
+    await $.ui.close({ id: PANE })
+  }
 }
 
 async function isOn($: EngineInterface, surface: Surface): Promise<boolean> {
@@ -449,20 +470,19 @@ async function isOn($: EngineInterface, surface: Surface): Promise<boolean> {
 
 const durationExpiry = new Map<string, number | null>()
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  const configured = prefsFromOptions(options)
+
   on('session.start', async ($, e, next) => {
-    const stored = await $.store.get(STORE_KEY)
-    const prefs = await update($, prefsAtom, () => toPrefs(stored))
+    await update($, prefsAtom, () => configured)
     await loadHintedTtl($)
     await $.command.register({
       name: 'cache-timer',
-      description: 'Pick where the prompt-cache countdown shows (no argument opens the settings pane)',
-      argumentHint: '[all | none | only <s,...> | on|off|toggle <s> | ttl auto|5m|1h | status]',
+      description: 'Show or change where the prompt-cache countdown appears (also in /config)',
+      argumentHint: '[all | none | only <s,...> | on|off|toggle <s> | ttl auto|5m|1h]',
     })
     $.clock.every(1000, () => refresh($))
-    if (prefs.surfaces.includes('pane')) {
-      void openPane($)
-    }
+    void syncPane($, configured.surfaces.includes('pane'))
 
     return next(e)
   })
@@ -506,17 +526,14 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'cache-timer' }, async ($, e) => {
-    const outcome = parseCommand(e.args, await read($, prefsAtom))
-    if ('open' in outcome) {
-      await openSettings($)
-
-      return { text: 'Opened the cache timer settings (Esc closes them).' }
+    const prefs = await read($, prefsAtom)
+    const outcome = parseCommand(e.args, prefs)
+    if (!('prefs' in outcome)) {
+      return { text: outcome.text }
     }
-    if ('prefs' in outcome) {
-      await savePrefs($, () => outcome.prefs)
-    }
+    const denied = await writePrefs($, prefs, outcome.prefs)
 
-    return { text: outcome.text }
+    return { text: denied === undefined ? outcome.text : `Could not change /config: ${denied}` }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -545,7 +562,7 @@ export const register: Register = on => {
     if (label === '') {
       return next(e)
     }
-    const tail = e.props.tail ? `${e.props.tail} · ${label}` : ` · ${label}`
+    const tail = e.props.tail ? `${e.props.tail} · ${label}` : label
 
     return next({ ...e, props: { ...e.props, tail } })
   })
@@ -602,58 +619,6 @@ export const register: Register = on => {
       </Box>
     )
   })
-
-  on('ui.render', { component: 'Pane', requestId: SETTINGS }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
-    const prefs = await read($, prefsAtom)
-    const reading = await currentReading($)
-
-    return (
-      <Box flexDirection="column" gap={1}>
-        <Box flexDirection="column">
-          <Text bold color={readingColor(reading)}>
-            {reading.kind === 'idle' ? 'No main-thread request yet' : bandText(reading)}
-          </Text>
-          <Text dimColor>{await ttlLine($)}</Text>
-        </Box>
-        <Box flexDirection="column">
-          <Text dimColor>Show in (press a key to toggle)</Text>
-          {SURFACES.map((s, i) => (
-            <Button
-              key={`surface-${s}`}
-              hotkey={String(i + 1)}
-              plain
-              autoFocus={i === 0 ? true : undefined}
-              label={`${prefs.surfaces.includes(s) ? '✓' : '·'} ${SURFACE_LABEL[s]}`}
-              onPress={() => toggleSurface($, s)}
-            />
-          ))}
-        </Box>
-        <Box flexDirection="column">
-          <Button
-            key="ttl"
-            hotkey="t"
-            plain
-            label={`TTL: ${prefs.ttl} (cycles auto, 5m, 1h)`}
-            onPress={() => setTtl($, nextTtl(prefs.ttl))}
-          />
-          <Button key="all" hotkey="a" plain label="Show everywhere" onPress={() => setSurfaces($, [...SURFACES])} />
-          <Button key="none" hotkey="n" plain label="Hide everywhere" onPress={() => setSurfaces($, [])} />
-          <Button key="done" hotkey="d" plain role="dismiss" label="Done (or Esc)" onPress={() => closeSettings($)} />
-        </Box>
-      </Box>
-    )
-  })
-}
-
-/**
- * The TTL preference after `ttl` in the order the settings cycle through.
- *
- * @param ttl the preference now
- * @returns the next one
- */
-export function nextTtl(ttl: TtlPref): TtlPref {
-  return TTL_PREFS[(TTL_PREFS.indexOf(ttl) + 1) % TTL_PREFS.length] ?? 'auto'
 }
 
 async function ttlLine($: EngineInterface): Promise<string> {
@@ -663,10 +628,6 @@ async function ttlLine($: EngineInterface): Promise<string> {
   const source = prefs.ttl === 'auto' ? ` (${detected === null ? 'not seen yet' : `last write ${detected}`})` : ''
 
   return `TTL ${prefs.ttl}${source}${stamp === null ? '' : ` · ${stamp.model}`}`
-}
-
-async function closeSettings($: EngineInterface): Promise<void> {
-  await $.ui.close({ id: SETTINGS })
 }
 
 function bandText(reading: Reading): string {
@@ -680,19 +641,4 @@ function bandText(reading: Reading): string {
     case 'cold':
       return `likely expired at ${formatTime(reading.expiresAt)} · ${reading.ttl} TTL`
   }
-}
-
-async function toggleSurface($: EngineInterface, surface: Surface): Promise<void> {
-  await savePrefs($, prefs => ({
-    ...prefs,
-    surfaces: SURFACES.filter(s => (s === surface ? !prefs.surfaces.includes(s) : prefs.surfaces.includes(s))),
-  }))
-}
-
-async function setTtl($: EngineInterface, ttl: TtlPref): Promise<void> {
-  await savePrefs($, prefs => ({ ...prefs, ttl }))
-}
-
-async function setSurfaces($: EngineInterface, surfaces: Surface[]): Promise<void> {
-  await savePrefs($, prefs => ({ ...prefs, surfaces }))
 }

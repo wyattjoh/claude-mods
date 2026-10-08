@@ -3,5 +3,62 @@
   "version": "0.1.0",
   "description": "Count down to when the session's prompt cache entry expires, on whichever surfaces you pick",
   "author": { "name": "Wyatt Johnson" },
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "ttl": {
+      "type": "string",
+      "title": "Cache timer: TTL",
+      "description": "auto reads the TTL of the last cache write from the transcript; 5m or 1h fixes it",
+      "options": ["auto", "5m", "1h"],
+      "default": "auto"
+    },
+    "showStatus": {
+      "type": "boolean",
+      "title": "Cache timer: status line",
+      "description": "Show the countdown in the plugin status line under the prompt",
+      "default": true
+    },
+    "showBand": {
+      "type": "boolean",
+      "title": "Cache timer: band above prompt",
+      "description": "Show a row above the prompt; takes the band from other mods while on",
+      "default": false
+    },
+    "showHint": {
+      "type": "boolean",
+      "title": "Cache timer: hint line",
+      "description": "Append the countdown to the dim hint line under the prompt (terminal only)",
+      "default": false
+    },
+    "showMode": {
+      "type": "boolean",
+      "title": "Cache timer: footer mode label",
+      "description": "Add the countdown to the mode labels at the right of the prompt footer",
+      "default": false
+    },
+    "showSpinner": {
+      "type": "boolean",
+      "title": "Cache timer: spinner",
+      "description": "Add the countdown after the spinner word while a turn runs",
+      "default": false
+    },
+    "showDuration": {
+      "type": "boolean",
+      "title": "Cache timer: turn duration line",
+      "description": "Add when the cache stays warm until to the line closing each turn",
+      "default": false
+    },
+    "showPane": {
+      "type": "boolean",
+      "title": "Cache timer: pane",
+      "description": "Keep a pane open with the countdown",
+      "default": false
+    },
+    "showToast": {
+      "type": "boolean",
+      "title": "Cache timer: expiry toasts",
+      "description": "Toast a minute before the cache expires and again when it does",
+      "default": false
+    }
+  }
 }
