@@ -6,6 +6,7 @@ import {
   DEFAULT_PREFS,
   effectiveTtl,
   formatClock,
+  nextTtl,
   parseCommand,
   readingAt,
   shortLabel,
@@ -77,6 +78,7 @@ function world(on: On, store: Record<string, unknown> = {}) {
   })
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('ui.close', () => ({ value: undefined }))
   on('ui.log', () => ({ value: undefined }))
   on('classic.Stop', () => ({}))
   const transcript = { text: TRANSCRIPT_1H }
@@ -180,8 +182,12 @@ describe('helpers', () => {
 })
 
 describe('parseCommand', () => {
-  test('no argument opens the pane', () => {
+  test('no argument opens the settings', () => {
     expect(parseCommand('', DEFAULT_PREFS)).toEqual({ open: true })
+  })
+
+  test('the TTL cycles auto, 5m, 1h', () => {
+    expect([nextTtl('auto'), nextTtl('5m'), nextTtl('1h')]).toEqual(['5m', '1h', 'auto'])
   })
 
   test('all, none, only, on, off, toggle keep the canonical order', () => {
@@ -308,9 +314,28 @@ describe('surfaces', () => {
       ])
     })
 
-    test(`settings pane toggles a surface on ${surface}`, async ($, on) => {
+    test(`settings dialog toggles surfaces and cycles the TTL on ${surface}`, async ($, on) => {
       const w = world(on)
       await start($)
+      const pane = await $.ui.mount({
+        plugin: 'cache-timer',
+        surface,
+        component: 'Pane',
+        requestId: 'cache-timer-settings',
+        props: PANE_PROPS,
+      })
+      const band = await pane.find({ key: 'surface-band' })
+      expect(band?.props).toMatchObject({ label: '· Band above prompt', hotkey: '2' })
+      await pane.press({ key: 'surface-band' })
+      expect((await pane.find({ key: 'surface-band' }))?.props.label).toBe('✓ Band above prompt')
+      await pane.press({ key: 'ttl' })
+      expect(w.stored.get('prefs')).toEqual({ surfaces: ['status', 'band'], ttl: '5m' })
+    })
+
+    test(`timer pane shows the countdown on ${surface}`, async ($, on) => {
+      world(on, { prefs: { surfaces: ['pane'], ttl: '5m' } })
+      await start($)
+      await step($)
       const pane = await $.ui.mount({
         plugin: 'cache-timer',
         surface,
@@ -318,10 +343,7 @@ describe('surfaces', () => {
         requestId: 'cache-timer',
         props: PANE_PROPS,
       })
-      expect((await pane.find({ key: 'surface-band' }))?.props.label).toBe('· Band above prompt')
-      await pane.press({ key: 'surface-band' })
-      expect((await pane.find({ key: 'surface-band' }))?.props.label).toBe('✓ Band above prompt')
-      expect(w.stored.get('prefs')).toEqual({ surfaces: ['status', 'band'], ttl: 'auto' })
+      expect(JSON.stringify(await pane.drawn())).toContain('5:00 left · 5m TTL')
     })
 
     test(`band draws the countdown on ${surface}`, async ($, on) => {

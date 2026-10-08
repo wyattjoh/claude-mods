@@ -67,7 +67,7 @@ Or run it from a checkout: `claude --plugin-dir ./cache-timer`.
 
 ### Use
 
-`/cache-timer` with no argument opens a settings pane. Its buttons toggle each surface and pick the TTL. Arguments do the same from the prompt:
+`/cache-timer` with no argument opens the settings as a dialog that takes the keys. `1`–`8` toggle the surfaces, `t` cycles the TTL, `a` and `n` turn everything on or off, and Esc or `d` closes it. Run the command again to reopen it. Arguments do the same from the prompt:
 
 ```
 /cache-timer all                 # every surface at once, to compare
@@ -87,7 +87,7 @@ Choices are saved across sessions. The default is `status`.
 | `mode` | a label among the footer's mode labels |
 | `spinner` | after the spinner word; only shows while a turn runs, when the cache is fresh anyway |
 | `duration` | the `Baked for 3s` line closing each turn, with the time the cache stays warm until |
-| `pane` | the settings pane, opened with each session (it needs 144 columns when nobody asked for it) |
+| `pane` | a pane with just the countdown, opened when you turn it on and with each later session (one opened at startup needs 144 columns) |
 | `toast` | a toast a minute before expiry and one on expiry |
 
 ### TTL
