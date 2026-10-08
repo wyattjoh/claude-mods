@@ -56,8 +56,12 @@ function submit(text: string) {
   return { text, wait: false, origin: { kind: 'composer' as const } }
 }
 
-function texts(rows: ReturnType<ReturnType<typeof mock.session>['appended']>): string[] {
-  return rows.map(row => row.message.content.map(block => ('text' in block ? block.text : '')).join(''))
+type Rows = ReturnType<ReturnType<typeof mock.session>['appended']>
+
+function texts(rows: Rows, type: 'user' | 'system' = 'user'): string[] {
+  return rows
+    .filter(row => row.message.type === type)
+    .map(row => row.message.content.map(block => ('text' in block ? block.text : '')).join(''))
 }
 
 describe('firstLineSkills', () => {
@@ -137,6 +141,9 @@ describe('prompt.submit', () => {
     expect(rows[3]).toBe('Say GAMMA-3.\n')
     expect(rows[4]).toContain('/alpha, /beta, /gamma')
     expect(rows.join('')).not.toContain('ghost')
+    expect(texts(session.appended(), 'system')).toEqual(['multi-skill: /alpha (leading), /beta, /gamma'])
+    // The notice comes last: under the prompt, after every row the model reads.
+    expect(session.appended().at(-1)?.message.type).toBe('system')
   })
 
   test('skips skills already loaded this session', { options: { enabledByDefault: true } }, async ($, on) => {
@@ -147,6 +154,18 @@ describe('prompt.submit', () => {
 
     expect(rows.filter(r => r.includes('BETA-9'))).toHaveLength(1)
     expect(rows.filter(r => r.includes('names /beta'))).toHaveLength(2)
+    expect(texts(session.appended(), 'system')).toEqual([
+      'multi-skill: /beta',
+      'multi-skill: nothing new loaded · already loaded: /beta',
+    ])
+  })
+
+  test('notes skills that loaded as text only', { options: { enabledByDefault: true } }, async ($, on) => {
+    const session = world(on)
+    await $.prompt.submit(submit('go /delta'))
+    expect(texts(session.appended(), 'system')).toEqual([
+      'multi-skill: /delta · text only: /delta (allowed-tools, model, !`cmd`)',
+    ])
   })
 
   test('ignores prompts the person did not send', { options: { enabledByDefault: true } }, async ($, on) => {
@@ -159,7 +178,8 @@ describe('prompt.submit', () => {
   test('toasts an unresolvable skill and loads nothing for it', { options: { enabledByDefault: true } }, async ($, on) => {
     const session = world(on)
     await $.prompt.submit(submit('try /ghost'))
-    expect(session.appended()).toEqual([])
+    expect(texts(session.appended())).toEqual([])
+    expect(texts(session.appended(), 'system')).toEqual(['multi-skill: nothing new loaded · not found: /ghost'])
   })
 })
 

@@ -151,6 +151,41 @@ export function framingNote(names: readonly string[]): string {
   return `The user's message names ${list} on its first line. Each is a skill the user invoked; its instructions are loaded in this conversation. Carry out every one of them as if the user had typed it as its own command, applied to the rest of the message.`
 }
 
+/**
+ * What one prompt's first-line skills came to, for the transcript notice.
+ */
+export type Activation = {
+  leading: string | undefined
+  loaded: readonly string[]
+  alreadyLoaded: readonly string[]
+  missing: readonly string[]
+  partial: readonly string[]
+}
+
+/**
+ * The transcript notice listing the skills a prompt activated: shown under
+ * the prompt, never read by the model.
+ *
+ * @param activation the prompt's skills, by outcome; `partial` entries are
+ *   already formatted as `/name (features)`
+ * @returns the notice's one line
+ */
+export function activationNotice(activation: Activation): string {
+  const slashed = (names: readonly string[]) => names.map(n => `/${n}`).join(', ')
+  const active = [
+    ...(activation.leading === undefined ? [] : [`/${activation.leading} (leading)`]),
+    ...activation.loaded.map(n => `/${n}`),
+  ]
+  const parts = [
+    active.length > 0 ? active.join(', ') : 'nothing new loaded',
+    ...(activation.alreadyLoaded.length > 0 ? [`already loaded: ${slashed(activation.alreadyLoaded)}`] : []),
+    ...(activation.missing.length > 0 ? [`not found: ${slashed(activation.missing)}`] : []),
+    ...(activation.partial.length > 0 ? [`text only: ${activation.partial.join('; ')}`] : []),
+  ]
+
+  return `multi-skill: ${parts.join(' · ')}`
+}
+
 function dirname(path: string): string {
   return path.slice(0, path.lastIndexOf('/'))
 }
@@ -385,6 +420,10 @@ async function appendRow($: EngineInterface, text: string) {
   await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
 }
 
+async function appendNotice($: EngineInterface, text: string) {
+  await $.session.append({ message: { type: 'system', content: [{ type: 'text', text }] } })
+}
+
 async function setDraft($: EngineInterface, draft: DraftSkill[]) {
   const current = await read($, draftAtom)
   if (JSON.stringify(current) !== JSON.stringify(draft)) {
@@ -520,16 +559,27 @@ export const register: Register = (on, options) => {
       $.ui.toast(`multi-skill: loaded as text only, put first for full support: ${partial.join('; ')}`)
     }
 
+    const notice = activationNotice({
+      leading: matches[0]?.start === 0 ? matches[0].name : undefined,
+      loaded: added,
+      alreadyLoaded: matches.filter(m => m.start !== 0 && loaded.includes(m.name)).map(m => m.name),
+      missing,
+      partial,
+    })
+
     // Typed mid-turn, rows appended now would land inside the running turn;
     // ride along as the prompt's context instead.
-    if (e.turnId !== undefined) {
-      return next({ ...e, context: [...(e.context ?? []), ...rows] })
+    if (e.turnId === undefined) {
+      for (const row of rows) {
+        await appendRow($, row)
+      }
     }
-    for (const row of rows) {
-      await appendRow($, row)
-    }
+    const result = await next(e.turnId === undefined ? e : { ...e, context: [...(e.context ?? []), ...rows] })
+    // After `next`, so the notice sits under the prompt; caught here, since
+    // the hook's own .catch would submit the prompt a second time.
+    await appendNotice($, notice).catch(() => undefined)
 
-    return next(e)
+    return result
   }).catch(($, e, next) => next(e))
 
   on('session.compact', async ($, e, next) => {
