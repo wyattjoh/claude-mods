@@ -51,6 +51,49 @@ Only prompts you send count (typed, Remote Control, or `claude -p`/SDK). Message
 
 The extra skills get their text loaded, not the rest of the engine's skill handling: no `` !`cmd` `` shell injection, no `allowed-tools`, `model` or `effort` overrides, and `$ARGUMENTS` is empty. Only the leading `/skill` gets all of that, so put a skill that relies on any of it first. multi-skill flags these as you type: the skill is underlined in the draft and the band says `/x uses model, allowed-tools: put it first`; on submit a toast lists any that still loaded as text only. Skills preloaded into a subagent also count as loaded for the main session.
 
+## cache-timer
+
+Shows how long the main conversation's prompt cache entry stays warm, so you know whether your next prompt reads the cache or pays to write it again.
+
+The countdown starts when each main-thread model request is sent, since the API measures an entry's lifetime from the start of the request that read or wrote it. Subagent requests have caches of their own and don't count. A request that cached nothing shows `no cache`. Once the TTL has passed it shows `likely expired`: the API deletes entries promptly, not instantly. `/clear` and compaction reset it until the next request.
+
+### Install
+
+```
+/plugin install cache-timer --marketplace wyattjoh/claude-mods
+```
+
+Or run it from a checkout: `claude --plugin-dir ./cache-timer`.
+
+### Use
+
+`/cache-timer` with no argument opens a settings pane. Its buttons toggle each surface and pick the TTL. Arguments do the same from the prompt:
+
+```
+/cache-timer all                 # every surface at once, to compare
+/cache-timer only hint,band      # just these
+/cache-timer on toast            # add one; off and toggle work the same
+/cache-timer ttl 1h              # auto (default), 5m or 1h
+/cache-timer status
+```
+
+Choices are saved across sessions. The default is `status`.
+
+| Surface | Where |
+| --- | --- |
+| `status` | the plugin status line under the prompt |
+| `band` | a row above the prompt; it takes the band from other mods while on |
+| `hint` | appended to the dim hint line under the prompt (terminal only) |
+| `mode` | a label among the footer's mode labels |
+| `spinner` | after the spinner word; only shows while a turn runs, when the cache is fresh anyway |
+| `duration` | the `Baked for 3s` line closing each turn, with the time the cache stays warm until |
+| `pane` | the settings pane, opened with each session (it needs 144 columns when nobody asked for it) |
+| `toast` | a toast a minute before expiry and one on expiry |
+
+### TTL
+
+Claude Code's main conversation uses a 1h TTL on a subscription within its included usage and 5m otherwise, and settings or env vars can change that. Under `auto` the mod reads the TTL of the last cache write from the transcript after each turn. Before the first write it falls back to `FORCE_PROMPT_CACHING_5M`, `CLAUDE_CODE_PROMPT_CACHE_TTL` or `ENABLE_PROMPT_CACHING_1H`, then to 5m. Set `ttl 5m` or `ttl 1h` to fix it.
+
 ## Development
 
 Each mod is a folder with `.claude-plugin/plugin.json`, `hooks/hooks.json`, and a hooks module.

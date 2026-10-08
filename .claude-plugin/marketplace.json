@@ -7,6 +7,11 @@
       "name": "multi-skill",
       "source": "./multi-skill",
       "description": "Invoke every /skill on a prompt's first line, user-only skills included, in one turn"
+    },
+    {
+      "name": "cache-timer",
+      "source": "./cache-timer",
+      "description": "Count down to when the session's prompt cache entry expires, on whichever surfaces you pick"
     }
   ]
 }
