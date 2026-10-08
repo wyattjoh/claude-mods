@@ -1,0 +1,7 @@
+{
+  "name": "cache-timer",
+  "version": "0.1.0",
+  "description": "Count down to when the session's prompt cache entry expires, on whichever surfaces you pick",
+  "author": { "name": "Wyatt Johnson" },
+  "types": "./types/index.d.ts"
+}
