@@ -11,7 +11,7 @@ With multi-skill on, every `/skill` on the **first line** of a prompt is treated
 - Each skill not yet loaded this session is added before your prompt as a hidden row, in the same shape the engine uses for a typed `/skill` (`<command-name>` row, then `Base directory for this skill: …` and the body).
 - A short hidden note tells the model which first-line names refer to those skills. Your prompt is sent exactly as typed.
 - Skills already loaded this session (typed, via the Skill tool, or by this mod) aren't loaded again. The list resets on `/clear` and after compaction.
-- Under your prompt, a transcript notice the model never reads lists what the turn activated, e.g. `multi-skill: /alpha (leading), /beta · already loaded: /gamma · not found: /ghost`.
+- A dim line drawn under your prompt in the chat lists what the turn activated, e.g. `multi-skill: /alpha (leading), /beta · already loaded: /gamma · not found: /ghost`. It is part of how the prompt row is drawn, so it stays with that prompt as you scroll and after a resume; the model never sees it.
 - While you type, matched skills on the first line are highlighted (green: will load, dim: already loaded, yellow: no SKILL.md found) and listed in a band above the prompt.
 
 ### Install

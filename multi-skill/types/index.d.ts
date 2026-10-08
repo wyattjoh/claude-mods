@@ -18,12 +18,35 @@ export type DraftSkill = {
   unsupported: string[]
 }
 
+/**
+ * The skills one prompt activated, drawn under that prompt's transcript row.
+ */
+export type ActivationNote = {
+  /**
+   * The stored prompt row's id, once the row is kept; null until then.
+   */
+  uuid: string | null
+  /**
+   * The prompt as typed, for a row whose id never bound.
+   */
+  text: string
+  /**
+   * The session the prompt was typed in; the text fallback stays inside it.
+   */
+  sessionId: string
+  /**
+   * The line drawn under the row.
+   */
+  line: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'multi-skill': {
       enabled: boolean | null
       loaded: string[]
       draft: DraftSkill[]
+      notes: ActivationNote[]
     }
   }
 }

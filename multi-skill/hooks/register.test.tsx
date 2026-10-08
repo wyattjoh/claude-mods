@@ -1,7 +1,8 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import type { On, PromptEditInput, PromptEditResult } from 'claude-code'
 
-import { expand, firstLineSkills, parseFrontmatter, projectDirs, unsupportedFeatures } from './register'
+import { expand, firstLineSkills, noteFor, parseFrontmatter, projectDirs, unsupportedFeatures } from './register'
 
 type PromptEdit = (e: PromptEditInput) => Promise<PromptEditResult>
 const PRESENTATION = { isFullscreen: false, columns: 80 }
@@ -17,7 +18,30 @@ const FILES: Record<string, string> = {
 
 const KNOWN = new Set(['alpha', 'beta', 'gamma', 'pr', 'web:deploy'])
 
-function world(on: On) {
+/**
+ * The engine beneath the plugin. Given `engine`, a submitted prompt stores
+ * its row as the session does, under the id `row-<n>`.
+ */
+function world(on: On, engine?: Engine) {
+  let rows = 0
+  on('prompt.submit', async ($, e) => {
+    if (engine) {
+      rows += 1
+      await engine.session.append({
+        message: { type: 'user', role: 'user', content: [{ type: 'text', text: e.text }] },
+        door: 'prompt',
+        origin: { kind: 'composer' },
+        uuid: `row-${rows}`,
+      })
+    }
+
+    return { text: e.text }
+  })
+  on('ui.render', { component: 'UserMessage' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>{e.props.text}</Text>
+  })
   mock.env(on, { HOME: '/home' })
   on('command.list', () => ({
     value: [
@@ -41,7 +65,6 @@ function world(on: On) {
   on('process.run', () => ({
     value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
-  on('prompt.submit', ($, e) => ({ text: e.text }))
   on('skill.prompt', ($, e) => ({ text: e.text }))
   on('prompt.edit', ($, e) => {
     const text = e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end)
@@ -49,7 +72,26 @@ function world(on: On) {
     return { text, cursor: e.start + e.inputText.length }
   })
 
+  mock.store(on)
+
   return mock.session(on)
+}
+
+/**
+ * The multi-skill line drawn under a prompt row, or undefined when none is.
+ */
+async function lineUnder($: Engine, requestId: string, text: string): Promise<string | undefined> {
+  const ui = await $.ui.mount({
+    plugin: 'multi-skill',
+    surface: 'terminal',
+    component: 'UserMessage',
+    props: { text, origin: { kind: 'composer' }, isExpanded: false },
+    requestId,
+  })
+  const line = await ui.find({ type: 'Text', text: /^multi-skill:/ })
+  await ui.unmount()
+
+  return line?.text
 }
 
 function submit(text: string) {
@@ -141,9 +183,11 @@ describe('prompt.submit', () => {
     expect(rows[3]).toBe('Say GAMMA-3.\n')
     expect(rows[4]).toContain('/alpha, /beta, /gamma')
     expect(rows.join('')).not.toContain('ghost')
-    expect(texts(session.appended(), 'system')).toEqual(['multi-skill: /alpha (leading), /beta, /gamma'])
-    // The notice comes last: under the prompt, after every row the model reads.
-    expect(session.appended().at(-1)?.message.type).toBe('system')
+    expect(await lineUnder($, 'unbound', '/alpha go /beta /gamma\nsecond /ghost')).toBe(
+      'multi-skill: /alpha (leading), /beta, /gamma',
+    )
+    // The line is drawn under the prompt row, never stored as a row of its own.
+    expect(texts(session.appended(), 'system')).toEqual([])
   })
 
   test('skips skills already loaded this session', { options: { enabledByDefault: true } }, async ($, on) => {
@@ -154,18 +198,16 @@ describe('prompt.submit', () => {
 
     expect(rows.filter(r => r.includes('BETA-9'))).toHaveLength(1)
     expect(rows.filter(r => r.includes('names /beta'))).toHaveLength(2)
-    expect(texts(session.appended(), 'system')).toEqual([
-      'multi-skill: /beta',
-      'multi-skill: nothing new loaded · already loaded: /beta',
-    ])
+    expect(await lineUnder($, 'unbound', 'use /beta')).toBe('multi-skill: /beta')
+    expect(await lineUnder($, 'unbound', 'again /beta')).toBe('multi-skill: nothing new loaded · already loaded: /beta')
   })
 
   test('notes skills that loaded as text only', { options: { enabledByDefault: true } }, async ($, on) => {
-    const session = world(on)
+    world(on)
     await $.prompt.submit(submit('go /delta'))
-    expect(texts(session.appended(), 'system')).toEqual([
+    expect(await lineUnder($, 'unbound', 'go /delta')).toBe(
       'multi-skill: /delta · text only: /delta (allowed-tools, model, !`cmd`)',
-    ])
+    )
   })
 
   test('ignores prompts the person did not send', { options: { enabledByDefault: true } }, async ($, on) => {
@@ -179,7 +221,7 @@ describe('prompt.submit', () => {
     const session = world(on)
     await $.prompt.submit(submit('try /ghost'))
     expect(texts(session.appended())).toEqual([])
-    expect(texts(session.appended(), 'system')).toEqual(['multi-skill: nothing new loaded · not found: /ghost'])
+    expect(await lineUnder($, 'unbound', 'try /ghost')).toBe('multi-skill: nothing new loaded · not found: /ghost')
   })
 })
 
@@ -219,5 +261,37 @@ describe('prompt.edit', () => {
     ])
     const leading = await typed('/delta x')
     expect(leading.decorations?.map(d => d.underline)).toEqual([false])
+  })
+})
+
+describe('UserMessage', () => {
+  test('draws the line under the prompt row it was recorded for', { options: { enabledByDefault: true } }, async ($, on) => {
+    world(on, $)
+    await $.prompt.submit(submit('go /beta'))
+    await $.prompt.submit(submit('plain prompt'))
+
+    expect(await lineUnder($, 'row-1', 'go /beta')).toBe('multi-skill: /beta')
+    expect(await lineUnder($, 'row-2', 'plain prompt')).toBeUndefined()
+  })
+
+  test('finds the row by its id even when the drawn text differs', { options: { enabledByDefault: true } }, async ($, on) => {
+    world(on, $)
+    await $.prompt.submit(submit('go /beta'))
+
+    expect(await lineUnder($, 'row-1', '/beta as drawn')).toBe('multi-skill: /beta')
+  })
+
+  test('matches by text only within the session that noted it', () => {
+    const notes = [
+      { uuid: 'row-9', text: 'go /beta', sessionId: 'old', line: 'multi-skill: /beta' },
+    ]
+    expect(noteFor(notes, 'row-9', 'anything', 'new')?.line).toBe('multi-skill: /beta')
+    expect(noteFor(notes, 'row-1', 'go /beta', 'new')).toBeUndefined()
+    expect(noteFor(notes, 'row-1', 'go /beta', 'old')?.line).toBe('multi-skill: /beta')
+  })
+
+  test('draws nothing extra for a row it never noted', async ($, on) => {
+    world(on, $)
+    expect(await lineUnder($, 'other', 'hello')).toBeUndefined()
   })
 })

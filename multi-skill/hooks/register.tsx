@@ -1,13 +1,20 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions, PromptDecoration, Register } from 'claude-code'
 
-import type { DraftSkill, SkillStatus } from '../types'
+import type { ActivationNote, DraftSkill, SkillStatus } from '../types'
 
 const NAME = 'multi-skill'
 
 const enabledAtom = atom({ plugin: 'multi-skill', key: 'enabled' } as const, null)
 const loadedAtom = atom({ plugin: 'multi-skill', key: 'loaded' } as const, [])
 const draftAtom = atom({ plugin: 'multi-skill', key: 'draft' } as const, [])
+const notesAtom = atom({ plugin: 'multi-skill', key: 'notes' } as const, [])
+
+const NOTES_STORE_KEY = 'notes'
+const MAX_NOTES = 200
+
+// True while a prompt this mod noted is entering, so its stored row binds.
+let isAwaitingRow = false
 
 const CANDIDATE =
   /(^|\s)\/([A-Za-z0-9](?:[\w.-]*\w)?(?:\/\w(?:[\w.-]*\w)?)*(?::\w(?:[\w.-]*\w)?)?)(?=$|[\s.,;:!?)\]])/g
@@ -420,8 +427,38 @@ async function appendRow($: EngineInterface, text: string) {
   await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
 }
 
-async function appendNotice($: EngineInterface, text: string) {
-  await $.session.append({ message: { type: 'system', content: [{ type: 'text', text }] } })
+async function saveNotes($: EngineInterface, change: (notes: ActivationNote[]) => ActivationNote[]) {
+  await update($, notesAtom, notes => change(notes).slice(-MAX_NOTES))
+  await $.store.set(NOTES_STORE_KEY, await read($, notesAtom))
+}
+
+async function restoreNotes($: EngineInterface) {
+  if ((await read($, notesAtom)).length > 0) {
+    return
+  }
+  const stored = await $.store.get(NOTES_STORE_KEY)
+  if (Array.isArray(stored)) {
+    await update($, notesAtom, () => stored as ActivationNote[])
+  }
+}
+
+/**
+ * The note to draw under a prompt row: the one bound to the row's id, else
+ * the latest this session recorded for the same prompt text.
+ *
+ * @param notes every recorded note
+ * @param requestId the row's id
+ * @param text the row's text
+ * @param sessionId the session drawing the row
+ * @returns the note, or undefined when the row activated nothing
+ */
+export function noteFor(
+  notes: readonly ActivationNote[],
+  requestId: string,
+  text: string,
+  sessionId: string,
+): ActivationNote | undefined {
+  return notes.find(n => n.uuid === requestId) ?? notes.findLast(n => n.sessionId === sessionId && n.text === text)
 }
 
 async function setDraft($: EngineInterface, draft: DraftSkill[]) {
@@ -440,6 +477,7 @@ async function resetSession($: EngineInterface) {
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     known = undefined
+    await restoreNotes($)
     await $.command.register({
       name: NAME,
       description: 'Load every /skill on a prompt\'s first line',
@@ -559,13 +597,15 @@ export const register: Register = (on, options) => {
       $.ui.toast(`multi-skill: loaded as text only, put first for full support: ${partial.join('; ')}`)
     }
 
-    const notice = activationNotice({
+    const line = activationNotice({
       leading: matches[0]?.start === 0 ? matches[0].name : undefined,
       loaded: added,
       alreadyLoaded: matches.filter(m => m.start !== 0 && loaded.includes(m.name)).map(m => m.name),
       missing,
       partial,
     })
+    const sessionId = await $.session.id()
+    await saveNotes($, notes => [...notes, { uuid: null, text: e.text, sessionId, line }])
 
     // Typed mid-turn, rows appended now would land inside the running turn;
     // ride along as the prompt's context instead.
@@ -574,13 +614,47 @@ export const register: Register = (on, options) => {
         await appendRow($, row)
       }
     }
-    const result = await next(e.turnId === undefined ? e : { ...e, context: [...(e.context ?? []), ...rows] })
-    // After `next`, so the notice sits under the prompt; caught here, since
-    // the hook's own .catch would submit the prompt a second time.
-    await appendNotice($, notice).catch(() => undefined)
-
-    return result
+    isAwaitingRow = true
+    try {
+      return await next(e.turnId === undefined ? e : { ...e, context: [...(e.context ?? []), ...rows] })
+    } finally {
+      isAwaitingRow = false
+    }
   }).catch(($, e, next) => next(e))
+
+  // The prompt's own row (typed, or a leading /command) takes the pending
+  // note's id, so the line draws under exactly that row.
+  on('session.append', async ($, e, next) => {
+    const stored = await next(e)
+    const isPromptRow = e.door === 'prompt' || e.door === 'command'
+    if (isAwaitingRow && isPromptRow && stored.uuid !== undefined) {
+      isAwaitingRow = false
+      const uuid = stored.uuid
+      await saveNotes($, notes => {
+        const at = notes.findLastIndex(n => n.uuid === null)
+
+        return at === -1 ? notes : notes.map((n, i) => (i === at ? { ...n, uuid } : n))
+      })
+    }
+
+    return stored
+  })
+
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    const note = noteFor(await read($, notesAtom), e.requestId, e.props.text, await $.session.id())
+    if (!note) {
+      return next(e)
+    }
+    const row = await next(e)
+    const { Box, Text } = $.ui.resolve(e)
+
+    return (
+      <Box flexDirection="column">
+        {row}
+        <Text dimColor>{note.line}</Text>
+      </Box>
+    )
+  })
 
   on('session.compact', async ($, e, next) => {
     const result = await next(e)
