@@ -1,0 +1,12 @@
+{
+  "name": "claude-mods",
+  "owner": { "name": "Wyatt Johnson" },
+  "description": "Claude Code mods built from function hooks",
+  "plugins": [
+    {
+      "name": "multi-skill",
+      "source": "./multi-skill",
+      "description": "Invoke every /skill on a prompt's first line, user-only skills included, in one turn"
+    }
+  ]
+}

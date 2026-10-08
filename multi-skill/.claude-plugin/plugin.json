@@ -1,0 +1,21 @@
+{
+  "name": "multi-skill",
+  "version": "0.1.0",
+  "description": "Invoke every /skill on a prompt's first line, user-only skills included, in one turn",
+  "author": { "name": "Wyatt Johnson" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "enabledByDefault": {
+      "type": "boolean",
+      "title": "Enabled by default",
+      "description": "Start each session with multi-skill on instead of waiting for /multi-skill on",
+      "default": false
+    },
+    "haikuNote": {
+      "type": "boolean",
+      "title": "Haiku framing note",
+      "description": "Have Haiku write the note that ties the loaded skills to the prompt",
+      "default": false
+    }
+  }
+}
