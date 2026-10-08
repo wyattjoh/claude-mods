@@ -125,7 +125,7 @@ export function commandRow(name: string): string {
 export function framingNote(names: readonly string[]): string {
   const list = names.map(n => `/${n}`).join(', ')
 
-  return `The user's next message names ${list} on its first line. Each is a skill the user invoked; its instructions are loaded above or earlier in this conversation. Carry out every one of them as if the user had typed it as its own command, applied to the rest of the message.`
+  return `The user's message names ${list} on its first line. Each is a skill the user invoked; its instructions are loaded in this conversation. Carry out every one of them as if the user had typed it as its own command, applied to the rest of the message.`
 }
 
 function dirname(path: string): string {
@@ -438,12 +438,7 @@ export const register: Register = (on, options) => {
     const usable = matches.filter(m => !missing.includes(m.name))
     const isOnlyLead = usable.length === 0 || (usable.length === 1 && usable[0]?.start === 0)
 
-    for (const { name, skill } of found) {
-      if (skill) {
-        await appendRow($, commandRow(name))
-        await appendRow($, expand(skill))
-      }
-    }
+    const rows = found.flatMap(({ name, skill }) => (skill ? [commandRow(name), expand(skill)] : []))
     const added = found.flatMap(f => (f.skill ? [f.name] : []))
     await update($, loadedAtom, list => [...list, ...added.filter(n => !list.includes(n))])
 
@@ -455,11 +450,20 @@ export const register: Register = (on, options) => {
         options.haikuNote === true
           ? ((await haikuNote($, e.text, described).catch(() => undefined)) ?? framingNote(usable.map(m => m.name)))
           : framingNote(usable.map(m => m.name))
-      await appendRow($, note)
+      rows.push(note)
     }
 
     if (missing.length > 0) {
       $.ui.toast(`multi-skill: no SKILL.md found for ${missing.map(n => `/${n}`).join(', ')}`)
+    }
+
+    // Typed mid-turn, rows appended now would land inside the running turn;
+    // ride along as the prompt's context instead.
+    if (e.turnId !== undefined) {
+      return next({ ...e, context: [...(e.context ?? []), ...rows] })
+    }
+    for (const row of rows) {
+      await appendRow($, row)
     }
 
     return next(e)
