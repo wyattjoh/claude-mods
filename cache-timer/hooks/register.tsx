@@ -384,16 +384,42 @@ async function refresh($: EngineInterface): Promise<void> {
   }
 }
 
-async function detectTtl($: EngineInterface, transcriptPath: string): Promise<void> {
+/**
+ * Reads the last cache write's TTL from the transcript. The turn's last
+ * response can land in the file just after Stop fires, so a miss is tried
+ * once more two seconds later.
+ */
+async function detectTtl($: EngineInterface, transcriptPath: string, isRetry: boolean): Promise<void> {
   const prefs = await read($, prefsAtom)
   if (prefs.ttl !== 'auto' || transcriptPath === '') {
     return
   }
-  const text = await $.fs.read(transcriptPath).catch(() => '')
-  const ttl = ttlFromTranscript(typeof text === 'string' ? text : '')
-  if (ttl !== null) {
-    await update($, detectedAtom, () => ttl)
+  const text = await transcriptTail($, transcriptPath)
+  const ttl = ttlFromTranscript(text)
+  $.ui.log(`cache-timer: transcript TTL ${ttl ?? 'not found'} (${text.length} chars read)`, { to: 'debug' })
+  if (ttl === null) {
+    if (!isRetry) {
+      $.clock.after(2000, () => detectTtl($, transcriptPath, true))
+    }
+
+    return
   }
+  await update($, detectedAtom, () => ttl)
+  await refresh($)
+}
+
+/**
+ * The transcript's text, or its last 2 MiB once it outgrows what `$.fs.read`
+ * takes (4 MiB); a cut first line fails to parse and is skipped.
+ */
+async function transcriptTail($: EngineInterface, path: string): Promise<string> {
+  const whole = await $.fs.read(path).catch(() => undefined)
+  if (typeof whole === 'string') {
+    return whole
+  }
+  const ran = await $.process.run(['tail', '-c', '2097152', path], { timeoutMs: 5000 }).catch(() => undefined)
+
+  return ran?.exitCode === 0 ? ran.stdout : ''
 }
 
 async function openPane($: EngineInterface, focus: boolean): Promise<void> {
@@ -457,8 +483,7 @@ export const register: Register = on => {
   })
 
   on('classic.Stop', async ($, e, next) => {
-    await detectTtl($, e.transcript_path)
-    await refresh($)
+    await detectTtl($, e.transcript_path, false)
 
     return next(e)
   })
@@ -545,7 +570,7 @@ export const register: Register = on => {
 
     return (
       <Text dimColor>
-        ✻ {e.props.word} for {formatDuration(e.props.durationMs)} · cache warm until {formatTime(expiresAt)}
+        {`✻ ${e.props.word} for ${formatDuration(e.props.durationMs)} · cache warm until ${formatTime(expiresAt)}`}
       </Text>
     )
   })
