@@ -38,6 +38,7 @@ export type ResolvedSkill = {
   body: string
   description: string | undefined
   isSkill: boolean
+  unsupported: string[]
 }
 
 /**
@@ -93,6 +94,26 @@ export function parseFrontmatter(md: string): { fields: Record<string, string>; 
 }
 
 /**
+ * Lists what a skill relies on that only the engine's own invocation
+ * honours, so it works fully only as the prompt's leading `/skill`.
+ *
+ * @param fields the skill's frontmatter
+ * @param body the skill's body
+ * @returns the features, in a fixed order; empty when it needs none
+ */
+export function unsupportedFeatures(fields: Readonly<Record<string, string>>, body: string): string[] {
+  const checks: [string, boolean][] = [
+    ['allowed-tools', Boolean(fields['allowed-tools']?.trim())],
+    ['model', Boolean(fields.model?.trim())],
+    ['effort', Boolean(fields.effort?.trim())],
+    ['!`cmd`', /!`[^`\n]+`/.test(body)],
+    ['arguments', /\$(ARGUMENTS|\d)/.test(body)],
+  ]
+
+  return checks.flatMap(([feature, isUsed]) => (isUsed ? [feature] : []))
+}
+
+/**
  * Renders a skill the way the engine does for a typed `/skill`: the base
  * directory line for a SKILL.md, then the body with its arguments filled.
  *
@@ -145,7 +166,13 @@ async function readSkillFile($: EngineInterface, path: string): Promise<Resolved
   }
   const { fields, body } = parseFrontmatter(text)
 
-  return { dir: dirname(path), body, description: fields.description, isSkill: path.endsWith('/SKILL.md') }
+  return {
+    dir: dirname(path),
+    body,
+    description: fields.description,
+    isSkill: path.endsWith('/SKILL.md'),
+    unsupported: unsupportedFeatures(fields, body),
+  }
 }
 
 async function firstSkill($: EngineInterface, paths: readonly string[]): Promise<ResolvedSkill | undefined> {
@@ -326,10 +353,13 @@ async function draftSkills($: EngineInterface, text: string): Promise<{ matches:
   const draft = await Promise.all(
     matches.map(async (m): Promise<DraftSkill> => {
       if (loaded.includes(m.name)) {
-        return { name: m.name, status: 'loaded' }
+        return { name: m.name, status: 'loaded', unsupported: [] }
       }
+      const skill = await cachedResolve($, m.name)
+      // The leading /skill is the engine's own invocation: nothing is lost.
+      const unsupported = skill && m.start !== 0 ? skill.unsupported : []
 
-      return { name: m.name, status: (await cachedResolve($, m.name)) ? 'new' : 'unresolved' }
+      return { name: m.name, status: skill ? 'new' : 'unresolved', unsupported }
     }),
   )
 
@@ -412,6 +442,7 @@ export const register: Register = (on, options) => {
       start: m.start,
       end: m.end,
       bold: true,
+      underline: (draft[i]?.unsupported.length ?? 0) > 0,
       color: STATUS_COLOR[draft[i]?.status ?? 'new'],
     }))
 
@@ -434,6 +465,13 @@ export const register: Register = (on, options) => {
             {skill.status === 'loaded' ? ' (loaded)' : skill.status === 'unresolved' ? ' (not found)' : ''}
           </Text>
         ))}
+        {draft
+          .filter(skill => skill.unsupported.length > 0)
+          .map(skill => (
+            <Text color="warning">
+              /{skill.name} uses {skill.unsupported.join(', ')}: put it first
+            </Text>
+          ))}
       </Box>
     )
   })
@@ -474,6 +512,12 @@ export const register: Register = (on, options) => {
 
     if (missing.length > 0) {
       $.ui.toast(`multi-skill: no SKILL.md found for ${missing.map(n => `/${n}`).join(', ')}`)
+    }
+    const partial = found.flatMap(({ name, skill }) =>
+      skill && skill.unsupported.length > 0 ? [`/${name} (${skill.unsupported.join(', ')})`] : [],
+    )
+    if (partial.length > 0) {
+      $.ui.toast(`multi-skill: loaded as text only, put first for full support: ${partial.join('; ')}`)
     }
 
     // Typed mid-turn, rows appended now would land inside the running turn;

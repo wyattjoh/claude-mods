@@ -11,6 +11,11 @@ export type SkillStatus = 'new' | 'loaded' | 'unresolved'
 export type DraftSkill = {
   name: string
   status: SkillStatus
+  /**
+   * What the skill relies on that is lost when it isn't the leading
+   * `/skill` (`allowed-tools`, `model`, ...); empty when nothing is.
+   */
+  unsupported: string[]
 }
 
 declare module 'claude-code' {

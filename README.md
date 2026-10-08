@@ -48,7 +48,7 @@ Only prompts you send count (typed, Remote Control, or `claude -p`/SDK). Message
 
 ### Limits
 
-The extra skills get their text loaded, not the rest of the engine's skill handling: no `` !`cmd` `` shell injection, no `allowed-tools`, `model` or `effort` overrides, and `$ARGUMENTS` is empty. Skills preloaded into a subagent also count as loaded for the main session.
+The extra skills get their text loaded, not the rest of the engine's skill handling: no `` !`cmd` `` shell injection, no `allowed-tools`, `model` or `effort` overrides, and `$ARGUMENTS` is empty. Only the leading `/skill` gets all of that, so put a skill that relies on any of it first. multi-skill flags these as you type: the skill is underlined in the draft and the band says `/x uses model, allowed-tools: put it first`; on submit a toast lists any that still loaded as text only. Skills preloaded into a subagent also count as loaded for the main session.
 
 ## Development
 

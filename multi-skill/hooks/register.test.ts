@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On, PromptEditInput, PromptEditResult } from 'claude-code'
 
-import { expand, firstLineSkills, parseFrontmatter, projectDirs } from './register'
+import { expand, firstLineSkills, parseFrontmatter, projectDirs, unsupportedFeatures } from './register'
 
 type PromptEdit = (e: PromptEditInput) => Promise<PromptEditResult>
 const PRESENTATION = { isFullscreen: false, columns: 80 }
@@ -11,6 +11,8 @@ const FILES: Record<string, string> = {
     '---\nname: alpha\ndescription: Alpha.\ndisable-model-invocation: true\n---\n\nSay ALPHA-7. $ARGUMENTS\n',
   '/proj/.claude/skills/beta/SKILL.md': '---\nname: beta\ndescription: Beta.\n---\n\nSay BETA-9 from ${CLAUDE_SKILL_DIR}.\n',
   '/home/.claude/commands/gamma.md': 'Say GAMMA-3.\n',
+  '/proj/.claude/skills/delta/SKILL.md':
+    '---\nname: delta\nmodel: opus\nallowed-tools: Bash(git:*)\n---\n\nBranch: !`git branch --show-current`\n',
 }
 
 const KNOWN = new Set(['alpha', 'beta', 'gamma', 'pr', 'web:deploy'])
@@ -23,6 +25,7 @@ function world(on: On) {
       { name: 'beta', description: 'Beta.', source: 'user' as const },
       { name: 'gamma', description: 'Gamma.', source: 'user' as const },
       { name: 'ghost', description: 'Ghost.', source: 'user' as const },
+      { name: 'delta', description: 'Delta.', source: 'user' as const },
       { name: 'compact', description: 'Compact.', source: 'builtin' as const },
     ],
   }))
@@ -91,9 +94,19 @@ describe('skill files', () => {
   test('parses frontmatter and expands like the engine', () => {
     const { fields, body } = parseFrontmatter(FILES['/proj/.claude/skills/beta/SKILL.md'] ?? '')
     expect(fields.description).toBe('Beta.')
-    expect(expand({ dir: '/proj/.claude/skills/beta', body, description: 'Beta.', isSkill: true })).toBe(
+    const skill = { dir: '/proj/.claude/skills/beta', body, description: 'Beta.', isSkill: true, unsupported: [] }
+    expect(expand(skill)).toBe(
       'Base directory for this skill: /proj/.claude/skills/beta\n\nSay BETA-9 from /proj/.claude/skills/beta.\n',
     )
+  })
+
+  test('lists the features only a leading /skill gets', () => {
+    const delta = parseFrontmatter(FILES['/proj/.claude/skills/delta/SKILL.md'] ?? '')
+    expect(unsupportedFeatures(delta.fields, delta.body)).toEqual(['allowed-tools', 'model', '!`cmd`'])
+    const alpha = parseFrontmatter(FILES['/proj/.claude/skills/alpha/SKILL.md'] ?? '')
+    expect(unsupportedFeatures(alpha.fields, alpha.body)).toEqual(['arguments'])
+    expect(unsupportedFeatures({ effort: 'high' }, 'Use $1.')).toEqual(['effort', 'arguments'])
+    expect(unsupportedFeatures({}, 'Plain text, a `code` span and a ! mark.')).toEqual([])
   })
 })
 
@@ -171,5 +184,20 @@ describe('prompt.edit', () => {
       [9, 'success'],
       [15, 'warning'],
     ])
+  })
+
+  test('underlines a later skill that needs to lead, not a leading one', { options: { enabledByDefault: true } }, async ($, on) => {
+    world(on)
+    const edit = ($.prompt as unknown as { edit: PromptEdit }).edit
+    const typed = (text: string) =>
+      edit({ origin: { kind: 'composer' }, text, cursor: text.length, start: text.length, end: text.length, inputText: ' ' })
+
+    const later = await typed('x /beta /delta')
+    expect(later.decorations?.map(d => [d.start, d.underline])).toEqual([
+      [2, false],
+      [8, true],
+    ])
+    const leading = await typed('/delta x')
+    expect(leading.decorations?.map(d => d.underline)).toEqual([false])
   })
 })
