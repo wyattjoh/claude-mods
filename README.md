@@ -67,17 +67,17 @@ Or run it from a checkout: `claude --plugin-dir ./cache-timer`.
 
 ### Use
 
-`/cache-timer` with no argument opens the settings as a dialog that takes the keys. `1`–`8` toggle the surfaces, `t` cycles the TTL, `a` and `n` turn everything on or off, and Esc or `d` closes it. Run the command again to reopen it. Arguments do the same from the prompt:
+The settings are rows in `/config`: type `cache` to filter to the "Cache timer" rows, one per surface and one for the TTL. A change applies at once. `/cache-timer` writes the same rows from the prompt:
 
 ```
+/cache-timer                     # show what's on
 /cache-timer all                 # every surface at once, to compare
 /cache-timer only hint,band      # just these
 /cache-timer on toast            # add one; off and toggle work the same
 /cache-timer ttl 1h              # auto (default), 5m or 1h
-/cache-timer status
 ```
 
-Choices are saved across sessions. The default is `status`.
+They're saved in settings (`pluginConfigs`), so they carry across sessions. The default is `status`.
 
 | Surface | Where |
 | --- | --- |

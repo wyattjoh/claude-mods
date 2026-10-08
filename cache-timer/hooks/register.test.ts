@@ -6,11 +6,11 @@ import {
   DEFAULT_PREFS,
   effectiveTtl,
   formatClock,
-  nextTtl,
+  optionChanges,
   parseCommand,
+  prefsFromOptions,
   readingAt,
   shortLabel,
-  toPrefs,
   ttlFromEnv,
   ttlFromTranscript,
 } from './register'
@@ -55,19 +55,18 @@ const BAND_PROPS = {
  * The engine beneath the plugin: a mocked clock and store, a status line and
  * toasts recorded, and a model whose next answer's usage the test sets.
  */
-function world(on: On, store: Record<string, unknown> = {}) {
+function world(on: On) {
   const clock = mock.clock(on, { now: START })
   mock.env(on, {})
-  const stored = new Map(Object.entries(store))
+  const configured: [string, unknown][] = []
   const statuses: (string | undefined)[] = []
   const toasts: string[] = []
   const drawn: unknown[] = []
   const model: { usage: TurnUsage | null } = { usage: CACHED }
-  on('store.get', ($, e) => ({ value: stored.get(e.key) }))
-  on('store.set', ($, e) => {
-    stored.set(e.key, e.value)
+  on('config.set', ($, e) => {
+    configured.push([e.key, e.value])
 
-    return { value: undefined }
+    return { value: e.value }
   })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
@@ -79,6 +78,7 @@ function world(on: On, store: Record<string, unknown> = {}) {
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
   on('ui.close', () => ({ value: undefined }))
+  on('ui.panes', () => ({ value: [] }))
   on('ui.log', () => ({ value: undefined }))
   on('classic.Stop', () => ({}))
   const transcript = { text: TRANSCRIPT_1H }
@@ -104,7 +104,7 @@ function world(on: On, store: Record<string, unknown> = {}) {
     }
   })
 
-  return { clock, statuses, toasts, model, stored, drawn, transcript, lastStatus: () => statuses.at(-1) }
+  return { clock, statuses, toasts, model, configured, drawn, transcript, lastStatus: () => statuses.at(-1) }
 }
 
 async function start($: Engine) {
@@ -171,23 +171,28 @@ describe('helpers', () => {
     expect(ttlFromTranscript('not json\n')).toBeNull()
   })
 
-  test('normalises stored preferences', () => {
-    expect(toPrefs(undefined)).toEqual(DEFAULT_PREFS)
-    expect(toPrefs({ surfaces: ['band', 'bogus', 'status'], ttl: '1h' })).toEqual({
+  test('reads preferences from the /config options', () => {
+    expect(prefsFromOptions({ showBand: true, showStatus: true, showHint: false, ttl: '1h' })).toEqual({
       surfaces: ['status', 'band'],
       ttl: '1h',
     })
-    expect(toPrefs({ surfaces: 'x', ttl: '2h' })).toEqual(DEFAULT_PREFS)
+    expect(prefsFromOptions({ ttl: '2h' })).toEqual({ surfaces: [], ttl: 'auto' })
+  })
+
+  test('writes only the /config rows that change', () => {
+    const from = { surfaces: ['status' as const, 'band' as const], ttl: 'auto' as const }
+    expect(optionChanges(from, { surfaces: ['band', 'hint'], ttl: '1h' })).toEqual([
+      ['showStatus', false],
+      ['showHint', true],
+      ['ttl', '1h'],
+    ])
+    expect(optionChanges(from, from)).toEqual([])
   })
 })
 
 describe('parseCommand', () => {
-  test('no argument opens the settings', () => {
-    expect(parseCommand('', DEFAULT_PREFS)).toEqual({ open: true })
-  })
-
-  test('the TTL cycles auto, 5m, 1h', () => {
-    expect([nextTtl('auto'), nextTtl('5m'), nextTtl('1h')]).toEqual(['5m', '1h', 'auto'])
+  test('no argument shows the settings and where to change them', () => {
+    expect(parseCommand('', DEFAULT_PREFS)).toEqual({ text: expect.stringContaining('/config') })
   })
 
   test('all, none, only, on, off, toggle keep the canonical order', () => {
@@ -255,8 +260,8 @@ describe('countdown', () => {
     expect(w.lastStatus()).toBe('⏱ cache 4:59')
   })
 
-  test('toasts once near expiry and once on expiry', async ($, on) => {
-    const w = world(on, { prefs: { surfaces: ['toast'], ttl: '5m' } })
+  test('toasts once near expiry and once on expiry', { options: { showStatus: false, showToast: true, ttl: '5m' } }, async ($, on) => {
+    const w = world(on)
     await start($)
     await step($)
     await w.clock.advance(301_000)
@@ -276,29 +281,37 @@ describe('countdown', () => {
 })
 
 describe('/cache-timer', () => {
-  test('changes and persists the surfaces', async ($, on) => {
+  test('writes the changed surfaces to /config', async ($, on) => {
     const w = world(on)
     await start($)
-    await step($)
     const out = await run($, 'only hint,mode')
     expect(out.text).toBe('Cache timer shows in: hint, mode. TTL: auto.')
-    expect(w.lastStatus()).toBeUndefined()
-    expect(w.stored.get('prefs')).toEqual({ surfaces: ['hint', 'mode'], ttl: 'auto' })
+    expect(w.configured).toEqual([
+      ['cache-timer.showStatus', false],
+      ['cache-timer.showHint', true],
+      ['cache-timer.showMode', true],
+    ])
   })
 
-  test('a fixed TTL changes the countdown', async ($, on) => {
+  test('writes the TTL to /config', async ($, on) => {
+    const w = world(on)
+    await start($)
+    await run($, 'ttl 1h')
+    expect(w.configured).toEqual([['cache-timer.ttl', '1h']])
+  })
+
+  test('a fixed TTL in /config sets the countdown', { options: { ttl: '1h' } }, async ($, on) => {
     const w = world(on)
     await start($)
     await step($)
-    await run($, 'ttl 1h')
     expect(w.lastStatus()).toBe('⏱ cache 1:00:00')
   })
 })
 
 describe('surfaces', () => {
   for (const surface of SURFACES) {
-    test(`hint tail and mode label on ${surface}`, async ($, on) => {
-      const w = world(on, { prefs: { surfaces: ['hint', 'mode'], ttl: '5m' } })
+    test(`hint tail and mode label on ${surface}`, { options: { showHint: true, showMode: true, ttl: '5m' } }, async ($, on) => {
+      const w = world(on)
       await start($)
       await step($)
       await $.ui.render({
@@ -309,31 +322,13 @@ describe('surfaces', () => {
       })
       await $.ui.render({ surface, component: 'SessionMode', requestId: 'mode', props: { modes: ['focus'] } })
       expect(w.drawn).toEqual([
-        { isDraft: false, isWorking: false, hint: '? for shortcuts', tail: ' · cache 5:00' },
+        { isDraft: false, isWorking: false, hint: '? for shortcuts', tail: 'cache 5:00' },
         { modes: ['focus', 'cache 5:00'] },
       ])
     })
 
-    test(`settings dialog toggles surfaces and cycles the TTL on ${surface}`, async ($, on) => {
-      const w = world(on)
-      await start($)
-      const pane = await $.ui.mount({
-        plugin: 'cache-timer',
-        surface,
-        component: 'Pane',
-        requestId: 'cache-timer-settings',
-        props: PANE_PROPS,
-      })
-      const band = await pane.find({ key: 'surface-band' })
-      expect(band?.props).toMatchObject({ label: '· Band above prompt', hotkey: '2' })
-      await pane.press({ key: 'surface-band' })
-      expect((await pane.find({ key: 'surface-band' }))?.props.label).toBe('✓ Band above prompt')
-      await pane.press({ key: 'ttl' })
-      expect(w.stored.get('prefs')).toEqual({ surfaces: ['status', 'band'], ttl: '5m' })
-    })
-
-    test(`timer pane shows the countdown on ${surface}`, async ($, on) => {
-      world(on, { prefs: { surfaces: ['pane'], ttl: '5m' } })
+    test(`timer pane shows the countdown on ${surface}`, { options: { showPane: true, ttl: '5m' } }, async ($, on) => {
+      world(on)
       await start($)
       await step($)
       const pane = await $.ui.mount({
@@ -346,8 +341,8 @@ describe('surfaces', () => {
       expect(JSON.stringify(await pane.drawn())).toContain('5:00 left · 5m TTL')
     })
 
-    test(`band draws the countdown on ${surface}`, async ($, on) => {
-      world(on, { prefs: { surfaces: ['band'], ttl: '5m' } })
+    test(`band draws the countdown on ${surface}`, { options: { showBand: true, ttl: '5m' } }, async ($, on) => {
+      world(on)
       await start($)
       await step($)
       const band = await $.ui.mount({ plugin: 'cache-timer', surface, component: 'AbovePrompt', props: BAND_PROPS })
@@ -355,8 +350,8 @@ describe('surfaces', () => {
     })
   }
 
-  test('turn duration line names when the cache stays warm until', async ($, on) => {
-    world(on, { prefs: { surfaces: ['duration'], ttl: '5m' } })
+  test('turn duration line names when the cache stays warm until', { options: { showDuration: true, ttl: '5m' } }, async ($, on) => {
+    world(on)
     await start($)
     await step($)
     const line = await $.ui.mount({
