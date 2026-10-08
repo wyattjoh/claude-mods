@@ -28,6 +28,28 @@ const CACHED: TurnUsage = {
 
 const UNCACHED: TurnUsage = { ...CACHED, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
+const TRANSCRIPT_1H = `${JSON.stringify({
+  type: 'assistant',
+  message: { usage: { cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 900 } } },
+})}\n`
+
+const PANE_PROPS = {
+  title: 'Cache timer',
+  isFocused: true,
+  bodyColumns: 60,
+  placement: 'inline',
+  scroll: { offset: 0, bodyRows: 30, contentRows: 30 },
+} as never
+
+const BAND_PROPS = {
+  hasSurvey: false,
+  isWorking: false,
+  maxRows: 10,
+  bodyColumns: 75,
+  scroll: { offset: 0, bodyRows: 9, contentRows: 1 },
+  view: {},
+} as never
+
 /**
  * The engine beneath the plugin: a mocked clock and store, a status line and
  * toasts recorded, and a model whose next answer's usage the test sets.
@@ -55,6 +77,10 @@ function world(on: On, store: Record<string, unknown> = {}) {
   })
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('ui.log', () => ({ value: undefined }))
+  on('classic.Stop', () => ({}))
+  const transcript = { text: TRANSCRIPT_1H }
+  on('fs.read', ($, e) => (e.path === '/t.jsonl' ? { value: transcript.text } : { deny: `ENOENT ${e.path}` }))
   on('ui.status', ($, e) => {
     statuses.push(e.text)
 
@@ -76,7 +102,7 @@ function world(on: On, store: Record<string, unknown> = {}) {
     }
   })
 
-  return { clock, statuses, toasts, model, stored, drawn, lastStatus: () => statuses.at(-1) }
+  return { clock, statuses, toasts, model, stored, drawn, transcript, lastStatus: () => statuses.at(-1) }
 }
 
 async function start($: Engine) {
@@ -290,18 +316,57 @@ describe('surfaces', () => {
         surface,
         component: 'Pane',
         requestId: 'cache-timer',
-        props: {
-          title: 'Cache timer',
-          isFocused: true,
-          bodyColumns: 60,
-          placement: 'inline',
-          scroll: { offset: 0, bodyRows: 30, contentRows: 30 },
-        } as never,
+        props: PANE_PROPS,
       })
       expect((await pane.find({ key: 'surface-band' }))?.props.label).toBe('· Band above prompt')
       await pane.press({ key: 'surface-band' })
       expect((await pane.find({ key: 'surface-band' }))?.props.label).toBe('✓ Band above prompt')
       expect(w.stored.get('prefs')).toEqual({ surfaces: ['status', 'band'], ttl: 'auto' })
     })
+
+    test(`band draws the countdown on ${surface}`, async ($, on) => {
+      world(on, { prefs: { surfaces: ['band'], ttl: '5m' } })
+      await start($)
+      await step($)
+      const band = await $.ui.mount({ plugin: 'cache-timer', surface, component: 'AbovePrompt', props: BAND_PROPS })
+      expect(JSON.stringify(await band.drawn())).toContain('5:00 left · 5m TTL')
+    })
   }
+
+  test('turn duration line names when the cache stays warm until', async ($, on) => {
+    world(on, { prefs: { surfaces: ['duration'], ttl: '5m' } })
+    await start($)
+    await step($)
+    const line = await $.ui.mount({
+      plugin: 'cache-timer',
+      surface: 'terminal',
+      component: 'TurnDuration',
+      requestId: 'msg-1',
+      props: { word: 'Baked', durationMs: 64_000 },
+    })
+    expect(JSON.stringify(await line.drawn())).toContain('Baked for 1m 4s · cache warm until')
+  })
+})
+
+describe('auto TTL', () => {
+  test('a turn ending reads the 1h write from the transcript', async ($, on) => {
+    const w = world(on)
+    await start($)
+    await step($)
+    expect(w.lastStatus()).toBe('⏱ cache 5:00')
+    await $.classic.Stop({ transcript_path: '/t.jsonl', stop_hook_active: false } as never)
+    expect(w.lastStatus()).toBe('⏱ cache 1:00:00')
+  })
+
+  test('a transcript not yet flushed is read again two seconds later', async ($, on) => {
+    const w = world(on)
+    w.transcript.text = ''
+    await start($)
+    await step($)
+    await $.classic.Stop({ transcript_path: '/t.jsonl', stop_hook_active: false } as never)
+    expect(w.lastStatus()).toBe('⏱ cache 5:00')
+    w.transcript.text = TRANSCRIPT_1H
+    await w.clock.advance(2000)
+    expect(w.lastStatus()).toBe('⏱ cache 59:58')
+  })
 })

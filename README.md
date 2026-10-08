@@ -93,6 +93,8 @@ Choices are saved across sessions. The default is `status`.
 
 Claude Code's main conversation uses a 1h TTL on a subscription within its included usage and 5m otherwise, and settings or env vars can change that. Under `auto` the mod reads the TTL of the last cache write from the transcript after each turn. Before the first write it falls back to `FORCE_PROMPT_CACHING_5M`, `CLAUDE_CODE_PROMPT_CACHE_TTL` or `ENABLE_PROMPT_CACHING_1H`, then to 5m. Set `ttl 5m` or `ttl 1h` to fix it.
 
+Requests the mod doesn't see, such as prompt suggestions, can refresh the cache too. So the countdown can run out a little before the entry really does, never after.
+
 ## Development
 
 Each mod is a folder with `.claude-plugin/plugin.json`, `hooks/hooks.json`, and a hooks module.
