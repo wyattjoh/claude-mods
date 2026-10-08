@@ -4,6 +4,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { CacheStamp, Prefs, Surface, Ttl, TtlPref } from '../types'
 
 const PANE = 'cache-timer'
+const SETTINGS = 'cache-timer-settings'
 const STORE_KEY = 'prefs'
 const WARN_MS = 60_000
 const TTL_MS: Record<Ttl, number> = { '5m': 5 * 60_000, '1h': 60 * 60_000 }
@@ -323,9 +324,17 @@ export function toPrefs(value: unknown): Prefs {
 }
 
 async function savePrefs($: EngineInterface, fn: (prefs: Prefs) => Prefs): Promise<Prefs> {
+  const hadPane = (await read($, prefsAtom)).surfaces.includes('pane')
   const next = await update($, prefsAtom, fn)
   await $.store.set(STORE_KEY, next)
   await refresh($)
+  const hasPane = next.surfaces.includes('pane')
+  if (hasPane && !hadPane) {
+    await openPane($)
+  }
+  if (hadPane && !hasPane) {
+    await $.ui.close({ id: PANE })
+  }
 
   return next
 }
@@ -422,8 +431,16 @@ async function transcriptTail($: EngineInterface, path: string): Promise<string>
   return ran?.exitCode === 0 ? ran.stdout : ''
 }
 
-async function openPane($: EngineInterface, focus: boolean): Promise<void> {
-  await $.ui.open(focus ? { id: PANE, title: 'Cache timer', focus: true } : { id: PANE, title: 'Cache timer' })
+async function openPane($: EngineInterface): Promise<void> {
+  await $.ui.open({ id: PANE, title: 'Cache timer' })
+}
+
+/**
+ * Opens the settings as a dialog: it takes the keys, each option has a
+ * hotkey, and Escape closes it, so `/cache-timer` always gets back in.
+ */
+async function openSettings($: EngineInterface): Promise<void> {
+  await $.ui.open({ id: SETTINGS, title: 'Cache timer settings', focus: true, closeOnEscape: true, rows: 18 })
 }
 
 async function isOn($: EngineInterface, surface: Surface): Promise<boolean> {
@@ -444,7 +461,7 @@ export const register: Register = on => {
     })
     $.clock.every(1000, () => refresh($))
     if (prefs.surfaces.includes('pane')) {
-      void openPane($, false)
+      void openPane($)
     }
 
     return next(e)
@@ -491,15 +508,12 @@ export const register: Register = on => {
   on('command.run', { command: 'cache-timer' }, async ($, e) => {
     const outcome = parseCommand(e.args, await read($, prefsAtom))
     if ('open' in outcome) {
-      await openPane($, true)
+      await openSettings($)
 
-      return { text: 'Opened the cache timer settings pane.' }
+      return { text: 'Opened the cache timer settings (Esc closes them).' }
     }
     if ('prefs' in outcome) {
-      const prefs = await savePrefs($, () => outcome.prefs)
-      if (prefs.surfaces.includes('pane')) {
-        await openPane($, false)
-      }
+      await savePrefs($, () => outcome.prefs)
     }
 
     return { text: outcome.text }
@@ -576,10 +590,22 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    const reading = await currentReading($)
+
+    return (
+      <Box flexDirection="column">
+        <Text bold color={readingColor(reading)}>
+          {reading.kind === 'idle' ? 'No main-thread request yet' : bandText(reading)}
+        </Text>
+        <Text dimColor>{await ttlLine($)}</Text>
+      </Box>
+    )
+  })
+
+  on('ui.render', { component: 'Pane', requestId: SETTINGS }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const prefs = await read($, prefsAtom)
-    const stamp = await read($, stampAtom)
-    const detected = await read($, detectedAtom)
     const reading = await currentReading($)
 
     return (
@@ -588,41 +614,59 @@ export const register: Register = on => {
           <Text bold color={readingColor(reading)}>
             {reading.kind === 'idle' ? 'No main-thread request yet' : bandText(reading)}
           </Text>
-          <Text dimColor>
-            TTL {prefs.ttl}
-            {prefs.ttl === 'auto' ? ` (${detected === null ? 'not seen yet' : `last write ${detected}`})` : ''}
-            {stamp === null ? '' : ` · ${stamp.model}`}
-          </Text>
+          <Text dimColor>{await ttlLine($)}</Text>
         </Box>
         <Box flexDirection="column">
-          <Text dimColor>Show in</Text>
-          {SURFACES.map(s => (
+          <Text dimColor>Show in (press a key to toggle)</Text>
+          {SURFACES.map((s, i) => (
             <Button
               key={`surface-${s}`}
+              hotkey={String(i + 1)}
               plain
+              autoFocus={i === 0 ? true : undefined}
               label={`${prefs.surfaces.includes(s) ? '✓' : '·'} ${SURFACE_LABEL[s]}`}
               onPress={() => toggleSurface($, s)}
             />
           ))}
         </Box>
-        <Box gap={1}>
-          <Text dimColor>TTL</Text>
-          {TTL_PREFS.map(t => (
-            <Button
-              key={`ttl-${t}`}
-              label={t}
-              variant={prefs.ttl === t ? 'primary' : 'secondary'}
-              onPress={() => setTtl($, t)}
-            />
-          ))}
-        </Box>
-        <Box gap={1}>
-          <Button key="all" label="All" onPress={() => setSurfaces($, [...SURFACES])} />
-          <Button key="none" label="None" onPress={() => setSurfaces($, [])} />
+        <Box flexDirection="column">
+          <Button
+            key="ttl"
+            hotkey="t"
+            plain
+            label={`TTL: ${prefs.ttl} (cycles auto, 5m, 1h)`}
+            onPress={() => setTtl($, nextTtl(prefs.ttl))}
+          />
+          <Button key="all" hotkey="a" plain label="Show everywhere" onPress={() => setSurfaces($, [...SURFACES])} />
+          <Button key="none" hotkey="n" plain label="Hide everywhere" onPress={() => setSurfaces($, [])} />
+          <Button key="done" hotkey="d" plain role="dismiss" label="Done (or Esc)" onPress={() => closeSettings($)} />
         </Box>
       </Box>
     )
   })
+}
+
+/**
+ * The TTL preference after `ttl` in the order the settings cycle through.
+ *
+ * @param ttl the preference now
+ * @returns the next one
+ */
+export function nextTtl(ttl: TtlPref): TtlPref {
+  return TTL_PREFS[(TTL_PREFS.indexOf(ttl) + 1) % TTL_PREFS.length] ?? 'auto'
+}
+
+async function ttlLine($: EngineInterface): Promise<string> {
+  const prefs = await read($, prefsAtom)
+  const stamp = await read($, stampAtom)
+  const detected = await read($, detectedAtom)
+  const source = prefs.ttl === 'auto' ? ` (${detected === null ? 'not seen yet' : `last write ${detected}`})` : ''
+
+  return `TTL ${prefs.ttl}${source}${stamp === null ? '' : ` · ${stamp.model}`}`
+}
+
+async function closeSettings($: EngineInterface): Promise<void> {
+  await $.ui.close({ id: SETTINGS })
 }
 
 function bandText(reading: Reading): string {
