@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "multi-skill@claude-mods": true
+  }
+}
