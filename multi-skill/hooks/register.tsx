@@ -255,8 +255,11 @@ async function pluginRootCandidates($: EngineInterface, home: string, plugin: st
   const fromArgs = await pluginDirArgs($)
   const devMods = `${home}/.claude/dev-mods/${await $.session.id()}`
   const fromDevMods = (await $.fs.list(devMods).catch(() => [])).map(entry => `${devMods}/${entry.name}`)
+  // Personal plugins (`<name>@skills-dir`) are linked into the skills directory.
+  const skillsDir = `${home}/.claude/skills`
+  const fromSkillsDir = (await $.fs.list(skillsDir).catch(() => [])).map(entry => `${skillsDir}/${entry.name}`)
 
-  return [...fromInstalled, ...fromEnv, ...fromArgs, ...fromDevMods]
+  return [...fromInstalled, ...fromEnv, ...fromArgs, ...fromDevMods, ...fromSkillsDir]
     .filter(Boolean)
     .map(root => root.replace(/^~(?=\/)/, home))
 }

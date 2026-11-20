@@ -14,6 +14,13 @@ const FILES: Record<string, string> = {
   '/home/.claude/commands/gamma.md': 'Say GAMMA-3.\n',
   '/proj/.claude/skills/delta/SKILL.md':
     '---\nname: delta\nmodel: opus\nallowed-tools: Bash(git:*)\n---\n\nBranch: !`git branch --show-current`\n',
+  // A personal plugin linked into the skills directory (`kit@skills-dir`).
+  '/home/.claude/skills/kit/.claude-plugin/plugin.json': '{ "name": "kit" }',
+  '/home/.claude/skills/kit/skills/lint/SKILL.md': '---\nname: lint\ndescription: Lint.\n---\n\nSay LINT-5.\n',
+}
+
+const DIRS: Record<string, string[]> = {
+  '/home/.claude/skills': ['kit', 'plain'],
 }
 
 const KNOWN = new Set(['alpha', 'beta', 'gamma', 'pr', 'web:deploy'])
@@ -50,6 +57,7 @@ function world(on: On, engine?: Engine) {
       { name: 'gamma', description: 'Gamma.', source: 'user' as const },
       { name: 'ghost', description: 'Ghost.', source: 'user' as const },
       { name: 'delta', description: 'Delta.', source: 'user' as const },
+      { name: 'kit:lint', description: 'Lint.', source: 'plugin' as const, plugin: 'kit' },
       { name: 'compact', description: 'Compact.', source: 'builtin' as const },
     ],
   }))
@@ -61,7 +69,7 @@ function world(on: On, engine?: Engine) {
 
     return text === undefined ? { deny: `ENOENT ${e.path}` } : { value: text }
   })
-  on('fs.list', () => ({ value: [] }))
+  on('fs.list', ($, e) => ({ value: (DIRS[e.path] ?? []).map(name => ({ name })) }))
   on('process.run', () => ({
     value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
@@ -215,6 +223,17 @@ describe('prompt.submit', () => {
     await $.prompt.submit({ text: 'hi /alpha /beta', wait: false, origin: { kind: 'peer' } })
     await $.prompt.submit({ text: 'hi /alpha /beta', wait: false, origin: { kind: 'channel', server: 'slack' } })
     expect(session.appended()).toEqual([])
+  })
+
+  test('loads a skill from a plugin linked into ~/.claude/skills', { options: { enabledByDefault: true } }, async ($, on) => {
+    const session = world(on)
+    await $.prompt.submit(submit('check /kit:lint'))
+    const rows = texts(session.appended())
+
+    expect(rows[1]).toBe(
+      'Base directory for this skill: /home/.claude/skills/kit/skills/lint\n\nSay LINT-5.\n',
+    )
+    expect(await lineUnder($, 'unbound', 'check /kit:lint')).toBe('multi-skill: /kit:lint')
   })
 
   test('toasts an unresolvable skill and loads nothing for it', { options: { enabledByDefault: true } }, async ($, on) => {
